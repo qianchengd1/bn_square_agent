@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Sequence
+
+from .core.config import Settings
+from .publishing.mcp_client import RemoteMCPClient
+
+
+def _read_content(args: argparse.Namespace) -> str:
+    if args.file:
+        return Path(args.file).read_text(encoding="utf-8")
+    if args.content:
+        return args.content
+    raise SystemExit("请通过 --content 或 --file 提供素材")
+
+
+def check_config(_: argparse.Namespace) -> int:
+    settings = Settings.from_env()
+    print("配置检查")
+    print(f"- MCP_URL: {settings.mcp_url}")
+    print(f"- AUTO_PUBLISH: {settings.auto_publish}")
+    print(f"- accounts: {len(settings.accounts)}")
+    for account in settings.accounts:
+        cookie_state = "已配置" if account.cookie else "缺失"
+        print(f"  - {account.key} ({account.name}): cookie {cookie_state}")
+    print(f"- LLM_API_KEY: {'已配置' if settings.llm_api_key else '缺失'}")
+    print(f"- LLM_BASE_URL: {'已配置' if settings.llm_base_url else '缺失'}")
+    print(f"- LLM_MODEL: {'已配置' if settings.llm_model else '缺失'}")
+    print(f"- DASHSCOPE_API_KEY: {'已配置' if settings.dashscope_api_key else '缺失'}")
+    return 0
+
+
+def list_tools(_: argparse.Namespace) -> int:
+    settings = Settings.from_env()
+    client = RemoteMCPClient(settings.mcp_url, auth_token=settings.mcp_auth_token)
+    client.initialize()
+    tools = client.list_tools()
+    print(f"远程 MCP 工具: {settings.mcp_url}")
+    for tool in tools:
+        required = tool.input_schema.get("required", []) if tool.input_schema else []
+        print(f"- {tool.name}")
+        if required:
+            print(f"  required: {', '.join(required)}")
+        if tool.description:
+            print(f"  {tool.description.splitlines()[0]}")
+    return 0
+
+
+def run_content(args: argparse.Namespace) -> int:
+    content = _read_content(args)
+    from .services import build_services
+
+    services = build_services()
+    if args.no_publish:
+        services.operator.auto_publish = False
+    runs = services.operator.generate_for_all_accounts(
+        content=content,
+        title=args.title,
+        url=args.url,
+    )
+    for run in runs:
+        print(f"[{run.account_key}]")
+        if run.error:
+            print(f"  error: {run.error}")
+            continue
+        print(f"  generated_ids: {run.generated_ids}")
+        print(f"  approved_generated_id: {run.approved_generated_id}")
+        if run.publish_result:
+            print(f"  publish_success: {run.publish_result.success}")
+            print(f"  publish_result: {run.publish_result.result}")
+        else:
+            print("  publish: skipped")
+    return 0
+
+
+def serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    uvicorn.run(
+        "bn_square_agent.webapp:app",
+        host=args.host,
+        port=args.port,
+        reload=False,
+    )
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="bn-square-agent")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    check = subparsers.add_parser("check", help="检查本地配置")
+    check.set_defaults(func=check_config)
+
+    tools = subparsers.add_parser("tools", help="列出远程 MCP 工具")
+    tools.set_defaults(func=list_tools)
+
+    run = subparsers.add_parser("run", help="多账号生成终稿并按配置自动发布")
+    run.add_argument("--content", help="直接传入素材文本")
+    run.add_argument("--file", help="从 UTF-8 文本文件读取素材")
+    run.add_argument("--title", default=None, help="素材标题")
+    run.add_argument("--url", default=None, help="素材来源链接")
+    run.add_argument("--no-publish", action="store_true", help="只生成不发布")
+    run.set_defaults(func=run_content)
+
+    server = subparsers.add_parser("serve", help="启动本地 Web 管理台")
+    server.add_argument("--host", default="127.0.0.1")
+    server.add_argument("--port", type=int, default=8787)
+    server.set_defaults(func=serve)
+
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

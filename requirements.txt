@@ -1,0 +1,12 @@
+chromadb
+fastapi
+httpx
+langchain-community
+langgraph
+lxml
+openai
+playwright
+pydantic
+python-dotenv
+uvicorn
+

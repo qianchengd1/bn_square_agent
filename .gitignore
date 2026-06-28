@@ -1,0 +1,27 @@
+# Runtime secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local databases, captured network samples, screenshots, and vector stores
+data/
+chroma_db/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Tooling / local agent state
+.agents/
+.codex/
+.git.broken*/
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

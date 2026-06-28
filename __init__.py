@@ -1,0 +1,2 @@
+"""BN Square content agent."""
+
