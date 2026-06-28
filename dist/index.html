@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>BN Square Agent</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260628-2" />
   </head>
   <body>
     <main class="shell">
@@ -45,6 +45,7 @@
           <label>
             <span>LLM API Key</span>
             <input name="llm_api_key" placeholder="已保存时显示加密掩码；输入新 key 可覆盖" />
+            <small id="llmApiKeyHint" class="field-hint">未加载</small>
           </label>
           <label>
             <span>LLM Base URL</span>
@@ -61,9 +62,11 @@
               <option value="">填好 URL 和 Key 后获取模型</option>
             </select>
           </div>
+          <small id="llmModelsStatus" class="field-hint">填好 URL 和 Key 后点击获取模型</small>
           <label>
             <span>DashScope API Key</span>
             <input name="dashscope_api_key" placeholder="已保存时显示加密掩码；输入新 key 可覆盖" />
+            <small id="dashscopeApiKeyHint" class="field-hint">未加载</small>
           </label>
           <label>
             <span>Embedding Model</span>
@@ -154,6 +157,6 @@
       </section>
     </main>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=20260628-2"></script>
   </body>
 </html>

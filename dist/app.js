@@ -11,6 +11,9 @@ const settingsStatus = document.querySelector("#settingsStatus");
 const llmModelOptions = document.querySelector("#llmModelOptions");
 const fetchLlmModelsButton = document.querySelector("#fetchLlmModels");
 const llmModelSelect = document.querySelector("#llmModelSelect");
+const llmModelsStatus = document.querySelector("#llmModelsStatus");
+const llmApiKeyHint = document.querySelector("#llmApiKeyHint");
+const dashscopeApiKeyHint = document.querySelector("#dashscopeApiKeyHint");
 
 function show(value) {
   output.textContent =
@@ -50,6 +53,13 @@ function setLlmModels(models, selectedModel = "") {
   }
 
   llmModelSelect.value = uniqueModels.includes(selectedModel) ? selectedModel : "";
+}
+
+function setFieldHint(element, configured, maskedValue) {
+  if (!element) return;
+  element.textContent = configured
+    ? `当前已保存：${maskedValue || "已配置"}`
+    : "当前未保存";
 }
 
 async function requestJson(url, options = {}) {
@@ -175,10 +185,20 @@ async function loadMonitorStatus() {
 async function loadSettings() {
   const settings = await requestJson("/api/settings");
   settingsForm.elements.llm_api_key.value = settings.llm_api_key_masked || "";
+  setFieldHint(
+    llmApiKeyHint,
+    settings.llm_api_key_configured,
+    settings.llm_api_key_masked
+  );
   settingsForm.elements.llm_base_url.value = settings.llm_base_url || "";
   settingsForm.elements.llm_model.value = settings.llm_model || "";
   settingsForm.elements.dashscope_api_key.value =
     settings.dashscope_api_key_masked || "";
+  setFieldHint(
+    dashscopeApiKeyHint,
+    settings.dashscope_api_key_configured,
+    settings.dashscope_api_key_masked
+  );
   settingsForm.elements.dashscope_embedding_model.value =
     settings.dashscope_embedding_model || "";
   settingsForm.elements.auto_publish.checked = Boolean(settings.auto_publish);
@@ -193,6 +213,11 @@ async function loadSettings() {
     settings.material_consume_batch_size || 1;
 
   setLlmModels(settings.llm_model_options || [], settings.llm_model || "");
+  if (llmModelsStatus) {
+    llmModelsStatus.textContent = settings.llm_model
+      ? `当前模型：${settings.llm_model}`
+      : "填好 URL 和 Key 后点击获取模型";
+  }
 
   settingsStatus.textContent = JSON.stringify(
     {
@@ -320,6 +345,9 @@ document.querySelector("#testEmbedding").addEventListener("click", async () => {
 fetchLlmModelsButton.addEventListener("click", async () => {
   try {
     fetchLlmModelsButton.disabled = true;
+    if (llmModelsStatus) {
+      llmModelsStatus.textContent = "正在保存配置并获取模型列表...";
+    }
     show("正在保存配置并获取模型列表...");
     await saveSettingsForm();
     const data = await requestJson("/api/settings/models", { method: "POST" });
@@ -328,12 +356,18 @@ fetchLlmModelsButton.addEventListener("click", async () => {
     }
     const currentModel = settingsForm.elements.llm_model.value.trim();
     setLlmModels(data.models || [], currentModel);
+    if (llmModelsStatus) {
+      llmModelsStatus.textContent = `已获取 ${(data.models || []).length} 个模型`;
+    }
     show({
       ok: true,
       count: (data.models || []).length,
       models: data.models || [],
     });
   } catch (error) {
+    if (llmModelsStatus) {
+      llmModelsStatus.textContent = `获取失败：${error.message}`;
+    }
     show(error.message);
   } finally {
     fetchLlmModelsButton.disabled = false;
