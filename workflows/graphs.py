@@ -147,7 +147,9 @@ def build_content_graph(
             "originals": {
                 candidate.candidate_index: candidate.content for candidate in candidates
             },
-            "rewrite_counts": {1: 0, 2: 0, 3: 0},
+            "rewrite_counts": {
+                candidate.candidate_index: 0 for candidate in candidates
+            },
         }
 
     def review(state: ContentState) -> ContentState:

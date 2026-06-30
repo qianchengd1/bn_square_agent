@@ -25,6 +25,7 @@ from .storage.database import Database
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 DIST_DIR = PACKAGE_DIR / "dist"
+SOURCE_CHECK_TIMEOUT_SECONDS = 90
 
 monitor_state: dict[str, Any] = {
     "running": False,
@@ -35,19 +36,65 @@ monitor_state: dict[str, Any] = {
     "last_tag_results": [],
     "last_error": None,
     "expired_count": 0,
+    "next_run_after_seconds": None,
+    "next_run_reason": "poll",
+    "current_stage": None,
 }
+
+
+def _consume_results_have_failure(consume_results: list[dict[str, Any]]) -> bool:
+    for item in consume_results:
+        for run in item.get("runs") or []:
+            if run.get("error") or run.get("publish_success") is False:
+                return True
+    return False
+
+
+def _next_monitor_delay(settings: Settings, result: dict[str, Any]) -> tuple[int, str]:
+    consume_results = result.get("consume_results") or []
+    source_results = result.get("results") or []
+    if _consume_results_have_failure(consume_results):
+        return max(30, settings.material_failure_interval_seconds), "publish_failed"
+    if consume_results:
+        return max(30, settings.material_success_interval_seconds), "published"
+    if any(item.get("error") for item in source_results):
+        return max(30, settings.material_failure_interval_seconds), "collect_failed"
+    return max(30, settings.material_poll_interval_seconds), "poll"
+
+
+def _paused_monitor_delay(settings: Settings) -> int:
+    return max(10, min(settings.material_poll_interval_seconds, 60))
 
 
 async def run_material_monitor_once() -> dict[str, Any]:
     settings = get_settings()
     db = get_db()
     monitor_state["running"] = True
+    monitor_state["current_stage"] = "清理过期素材"
     monitor_state["last_started_at"] = datetime.now(timezone.utc).isoformat()
+    monitor_state["last_finished_at"] = None
     try:
         expired_count = db.expire_stale_material_items(
             ttl_seconds=settings.material_ttl_seconds
         )
-        results = await asyncio.to_thread(MaterialSourceService(db).check_all)
+        monitor_state["expired_count"] = expired_count
+        monitor_state["current_stage"] = "采集素材源"
+        try:
+            results = await asyncio.wait_for(
+                asyncio.to_thread(MaterialSourceService(db).check_all),
+                timeout=SOURCE_CHECK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            results = [
+                {
+                    "source_id": "all",
+                    "found": 0,
+                    "inserted": 0,
+                    "error": f"采集超时 {SOURCE_CHECK_TIMEOUT_SECONDS}s，已跳过本轮采集",
+                }
+            ]
+        monitor_state["last_results"] = results
+        monitor_state["current_stage"] = "素材打标"
         tag_results: list[dict[str, Any]] = []
         tagger = MaterialTagger()
         for material in db.pending_material_items_for_tagging(limit=100):
@@ -82,6 +129,8 @@ async def run_material_monitor_once() -> dict[str, Any]:
                         "error": str(exc),
                     }
                 )
+        monitor_state["last_tag_results"] = tag_results
+        monitor_state["current_stage"] = "等待消费素材"
         consume_results: list[dict[str, Any]] = []
         if settings.auto_consume_materials:
             materials = db.list_material_items(
@@ -92,6 +141,9 @@ async def run_material_monitor_once() -> dict[str, Any]:
             if materials:
                 services = await asyncio.to_thread(build_services)
                 for material in materials:
+                    monitor_state["current_stage"] = (
+                        f"消费素材 material#{material['id']}"
+                    )
                     runs = await asyncio.to_thread(
                         services.operator.run_material_item_for_all_accounts,
                         material["id"],
@@ -116,6 +168,7 @@ async def run_material_monitor_once() -> dict[str, Any]:
                             ],
                         }
                     )
+                    monitor_state["last_consume_results"] = consume_results
         monitor_state.update(
             {
                 "last_results": results,
@@ -135,17 +188,31 @@ async def run_material_monitor_once() -> dict[str, Any]:
         raise
     finally:
         monitor_state["running"] = False
+        monitor_state["current_stage"] = None
         monitor_state["last_finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
 async def material_monitor_loop() -> None:
     while True:
         settings = get_settings()
+        if not settings.auto_monitor_enabled:
+            monitor_state["running"] = False
+            monitor_state["current_stage"] = "自动循环已暂停"
+            monitor_state["next_run_after_seconds"] = _paused_monitor_delay(settings)
+            monitor_state["next_run_reason"] = "paused"
+            await asyncio.sleep(_paused_monitor_delay(settings))
+            continue
+        delay_seconds = max(30, settings.material_poll_interval_seconds)
+        reason = "poll"
         try:
-            await run_material_monitor_once()
+            result = await run_material_monitor_once()
+            delay_seconds, reason = _next_monitor_delay(settings, result)
         except Exception:
-            pass
-        await asyncio.sleep(max(30, settings.material_poll_interval_seconds))
+            delay_seconds = max(30, settings.material_failure_interval_seconds)
+            reason = "error"
+        monitor_state["next_run_after_seconds"] = delay_seconds
+        monitor_state["next_run_reason"] = reason
+        await asyncio.sleep(delay_seconds)
 
 
 @asynccontextmanager
@@ -187,8 +254,11 @@ class SettingsPayload(BaseModel):
     mcp_url: str | None = None
     mcp_publish_tool: str | None = None
     auto_publish: bool | None = None
+    auto_monitor_enabled: bool | None = None
     auto_consume_materials: bool | None = None
     material_poll_interval_seconds: int | None = None
+    material_success_interval_seconds: int | None = None
+    material_failure_interval_seconds: int | None = None
     material_ttl_seconds: int | None = None
     material_consume_batch_size: int | None = None
 
@@ -287,7 +357,6 @@ def list_accounts() -> list[dict]:
                 item["name"]
                 for item in BinanceAccountChecker._parse_cookie_header(row["cookie"] or "")
             ],
-            "signature_key": row.get("signature_key"),
             "check_status": row.get("check_status"),
             "checked_at": row.get("checked_at"),
             "check_error": row.get("check_error"),
@@ -311,9 +380,12 @@ def read_settings() -> dict:
         "dashscope_embedding_model": settings.dashscope_embedding_model,
         "mcp_url": settings.mcp_url,
         "mcp_publish_tool": settings.mcp_publish_tool,
+        "auto_monitor_enabled": settings.auto_monitor_enabled,
         "auto_publish": settings.auto_publish,
         "auto_consume_materials": settings.auto_consume_materials,
         "material_poll_interval_seconds": settings.material_poll_interval_seconds,
+        "material_success_interval_seconds": settings.material_success_interval_seconds,
+        "material_failure_interval_seconds": settings.material_failure_interval_seconds,
         "material_ttl_seconds": settings.material_ttl_seconds,
         "material_consume_batch_size": settings.material_consume_batch_size,
     }
@@ -334,11 +406,14 @@ def save_settings(payload: SettingsPayload) -> dict:
         "dashscope_api_key": "DASHSCOPE_API_KEY",
     }
     bool_fields = {
+        "auto_monitor_enabled": "AUTO_MONITOR_ENABLED",
         "auto_publish": "AUTO_PUBLISH",
         "auto_consume_materials": "AUTO_CONSUME_MATERIALS",
     }
     int_fields = {
         "material_poll_interval_seconds": "MATERIAL_POLL_INTERVAL_SECONDS",
+        "material_success_interval_seconds": "MATERIAL_SUCCESS_INTERVAL_SECONDS",
+        "material_failure_interval_seconds": "MATERIAL_FAILURE_INTERVAL_SECONDS",
         "material_ttl_seconds": "MATERIAL_TTL_SECONDS",
         "material_consume_batch_size": "MATERIAL_CONSUME_BATCH_SIZE",
     }
@@ -422,7 +497,11 @@ def save_account(payload: AccountPayload) -> dict:
     cookie = payload.cookie.strip()
     if not key or not cookie:
         raise HTTPException(status_code=400, detail="账号标识和 Cookie 必填")
-    get_db().upsert_account(account_key=key, name=name, cookie=cookie)
+    get_db().upsert_account(
+        account_key=key,
+        name=name,
+        cookie=cookie,
+    )
     return {"ok": True}
 
 
@@ -447,13 +526,12 @@ def check_account(account_key: str) -> dict:
     status = "valid" if result.valid else "invalid"
     db.update_account_check(
         account_key,
-        signature_key=result.signature_key,
+        signature_key=None,
         status=status,
         error=result.error,
     )
     return {
         "valid": result.valid,
-        "signature_key": result.signature_key,
         "error": result.error,
     }
 
@@ -483,7 +561,11 @@ def mcp_tools() -> dict:
 def run(payload: RunPayload) -> dict:
     services = build_services()
     accounts = [
-        AccountConfig(key=row["account_key"], name=row["name"], cookie=row["cookie"])
+        AccountConfig(
+            key=row["account_key"],
+            name=row["name"],
+            cookie=row["cookie"],
+        )
         for row in services.db.list_accounts()
     ]
     if not accounts:
@@ -566,17 +648,38 @@ def material_monitor_status() -> dict:
     return {
         **monitor_state,
         "poll_interval_seconds": settings.material_poll_interval_seconds,
+        "success_interval_seconds": settings.material_success_interval_seconds,
+        "failure_interval_seconds": settings.material_failure_interval_seconds,
         "ttl_seconds": settings.material_ttl_seconds,
         "auto_consume_materials": settings.auto_consume_materials,
+        "auto_monitor_enabled": settings.auto_monitor_enabled,
         "consume_batch_size": settings.material_consume_batch_size,
     }
+
+
+class MonitorEnabledPayload(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/material-monitor/enabled")
+def set_material_monitor_enabled(payload: MonitorEnabledPayload) -> dict:
+    get_db().set_app_settings(
+        {"AUTO_MONITOR_ENABLED": "1" if payload.enabled else "0"}
+    )
+    monitor_state["next_run_reason"] = "poll" if payload.enabled else "paused"
+    monitor_state["current_stage"] = None if payload.enabled else "自动循环已暂停"
+    return {"ok": True, "enabled": payload.enabled}
 
 
 @app.post("/api/material-items/run")
 def run_material_item(payload: RunMaterialPayload) -> dict:
     services = build_services()
     accounts = [
-        AccountConfig(key=row["account_key"], name=row["name"], cookie=row["cookie"])
+        AccountConfig(
+            key=row["account_key"],
+            name=row["name"],
+            cookie=row["cookie"],
+        )
         for row in services.db.list_accounts()
     ]
     if not accounts:

@@ -16,8 +16,14 @@ class ChartTarget:
 
 
 class ChartImageService:
-    def __init__(self, *, timeout_ms: int = 60_000):
+    def __init__(
+        self,
+        *,
+        timeout_ms: int = 75_000,
+        render_wait_ms: int = 30_000,
+    ):
         self.timeout_ms = timeout_ms
+        self.render_wait_ms = render_wait_ms
 
     @staticmethod
     def extract_target(text: str) -> ChartTarget | None:
@@ -73,6 +79,8 @@ class ChartImageService:
             )
             page = context.new_page()
             page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+            self._dismiss_popups(page)
+            page.wait_for_timeout(self.render_wait_ms)
             self._dismiss_popups(page)
             if not self._wait_for_chart_pixels(page):
                 browser.close()

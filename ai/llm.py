@@ -21,7 +21,9 @@ class StructuredLLM:
         self.client = OpenAI(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url,
-            http_client=httpx.Client(trust_env=False),
+            timeout=45.0,
+            max_retries=1,
+            http_client=httpx.Client(timeout=45.0, trust_env=False),
         )
 
     @staticmethod

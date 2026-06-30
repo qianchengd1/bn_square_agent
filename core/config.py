@@ -99,8 +99,11 @@ class Settings:
     mcp_url: str
     mcp_publish_tool: str
     mcp_auth_token: str
+    auto_monitor_enabled: bool
     auto_publish: bool
     material_poll_interval_seconds: int
+    material_success_interval_seconds: int
+    material_failure_interval_seconds: int
     material_ttl_seconds: int
     auto_consume_materials: bool
     material_consume_batch_size: int
@@ -126,11 +129,21 @@ class Settings:
             mcp_url=os.getenv("MCP_URL", "https://qianxin.xyz/mcp").strip(),
             mcp_publish_tool=os.getenv("MCP_PUBLISH_TOOL", "").strip(),
             mcp_auth_token=os.getenv("MCP_AUTH_TOKEN", "").strip(),
+            auto_monitor_enabled=os.getenv("AUTO_MONITOR_ENABLED", "1")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
             auto_publish=os.getenv("AUTO_PUBLISH", "1").strip().lower()
             not in {"0", "false", "no", "off"}
             and publish_mode != "manual",
             material_poll_interval_seconds=int(
                 os.getenv("MATERIAL_POLL_INTERVAL_SECONDS", "300")
+            ),
+            material_success_interval_seconds=int(
+                os.getenv("MATERIAL_SUCCESS_INTERVAL_SECONDS", "600")
+            ),
+            material_failure_interval_seconds=int(
+                os.getenv("MATERIAL_FAILURE_INTERVAL_SECONDS", "120")
             ),
             material_ttl_seconds=int(os.getenv("MATERIAL_TTL_SECONDS", "7200")),
             auto_consume_materials=os.getenv("AUTO_CONSUME_MATERIALS", "1")
@@ -201,10 +214,22 @@ class Settings:
             mcp_url=text("MCP_URL", self.mcp_url),
             mcp_publish_tool=text("MCP_PUBLISH_TOOL", self.mcp_publish_tool),
             mcp_auth_token=text("MCP_AUTH_TOKEN", self.mcp_auth_token),
+            auto_monitor_enabled=boolean(
+                "AUTO_MONITOR_ENABLED",
+                self.auto_monitor_enabled,
+            ),
             auto_publish=boolean("AUTO_PUBLISH", self.auto_publish),
             material_poll_interval_seconds=integer(
                 "MATERIAL_POLL_INTERVAL_SECONDS",
                 self.material_poll_interval_seconds,
+            ),
+            material_success_interval_seconds=integer(
+                "MATERIAL_SUCCESS_INTERVAL_SECONDS",
+                self.material_success_interval_seconds,
+            ),
+            material_failure_interval_seconds=integer(
+                "MATERIAL_FAILURE_INTERVAL_SECONDS",
+                self.material_failure_interval_seconds,
             ),
             material_ttl_seconds=integer("MATERIAL_TTL_SECONDS", self.material_ttl_seconds),
             auto_consume_materials=boolean(

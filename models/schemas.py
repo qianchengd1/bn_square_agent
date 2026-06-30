@@ -53,7 +53,7 @@ class Candidate(BaseModel):
 
 
 class CandidateSet(BaseModel):
-    candidates: list[Candidate] = Field(min_length=3, max_length=3)
+    candidates: list[Candidate] = Field(min_length=1, max_length=3)
 
 
 class ReviewScores(BaseModel):
@@ -76,4 +76,3 @@ class ContentReview(BaseModel):
             and self.scores.originality >= 7
             and self.scores.expression_quality >= 7
         )
-

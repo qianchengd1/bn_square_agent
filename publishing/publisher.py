@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 from ..core.config import AccountConfig, Settings
@@ -59,9 +60,15 @@ class MCPPublisher:
         generated: dict[str, Any],
     ) -> dict[str, Any]:
         tool_name = self.resolve_publish_tool()
+        content = re.sub(
+            r"\n*\{future\}\([A-Z0-9]{2,30}USDT\)\s*",
+            "",
+            generated["content"],
+            flags=re.IGNORECASE,
+        ).rstrip()
         arguments = {
             "cookie": account.cookie,
-            "content": generated["content"],
+            "content": content,
         }
         chart_text = "\n".join(
             item
@@ -72,6 +79,10 @@ class MCPPublisher:
             )
             if item
         )
+        target = self.chart_images.extract_target(chart_text)
+        if target:
+            coin = target.symbol.removesuffix("USDT")
+            arguments["coins"] = f"{coin}:{target.market}"
         try:
             image_base64 = self.chart_images.image_for_text(chart_text)
             if image_base64:

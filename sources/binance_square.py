@@ -10,6 +10,7 @@ from ..storage.database import Database
 
 
 BINANCE_BASE_URL = "https://www.binance.com"
+PAGE_FETCH_TIMEOUT_MS = 45_000
 USER_CLIENT_API = "/bapi/composite/v3/friendly/pgc/user/client"
 PROFILE_CONTENTS_API = (
     "/bapi/composite/v2/friendly/pgc/content/queryUserProfilePageContentsWithFilter"
@@ -92,21 +93,32 @@ class BinanceSquareMonitor:
             page.wait_for_timeout(3000)
 
             user_result = page.evaluate(
-                """async ({api, username}) => {
-                    const response = await fetch(api, {
+                """async ({api, username, timeoutMs}) => {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), timeoutMs);
+                    try {
+                      const response = await fetch(api, {
                         method: 'POST',
                         credentials: 'include',
                         headers: {'content-type': 'application/json'},
+                        signal: controller.signal,
                         body: JSON.stringify({
                             username,
                             getFollowCount: true,
                             queryFollowersInfo: true,
                             queryRelationTokens: true
                         })
-                    });
-                    return await response.json();
+                      });
+                      return await response.json();
+                    } finally {
+                      clearTimeout(timer);
+                    }
                 }""",
-                {"api": USER_CLIENT_API, "username": username},
+                {
+                    "api": USER_CLIENT_API,
+                    "username": username,
+                    "timeoutMs": PAGE_FETCH_TIMEOUT_MS,
+                },
             )
             data = user_result.get("data") or {}
             square_uid = data.get("squareUid")
@@ -119,21 +131,29 @@ class BinanceSquareMonitor:
             time_offset: int | str = -1
             for _ in range(self.max_pages):
                 contents_result = page.evaluate(
-                    """async ({api, squareUid, timeOffset}) => {
+                    """async ({api, squareUid, timeOffset, timeoutMs}) => {
+                        const controller = new AbortController();
+                        const timer = setTimeout(() => controller.abort(), timeoutMs);
                         const params = new URLSearchParams({
                             targetSquareUid: squareUid,
                             timeOffset: String(timeOffset),
                             filterType: 'ALL'
                         });
-                        const response = await fetch(`${api}?${params}`, {
-                            credentials: 'include'
-                        });
-                        return await response.json();
+                        try {
+                          const response = await fetch(`${api}?${params}`, {
+                              credentials: 'include',
+                              signal: controller.signal
+                          });
+                          return await response.json();
+                        } finally {
+                          clearTimeout(timer);
+                        }
                     }""",
                     {
                         "api": PROFILE_CONTENTS_API,
                         "squareUid": square_uid,
                         "timeOffset": time_offset,
+                        "timeoutMs": PAGE_FETCH_TIMEOUT_MS,
                     },
                 )
                 contents_data = contents_result.get("data") or {}
@@ -182,8 +202,11 @@ class MaterialSourceService:
             self.db.update_material_source_check(source["id"])
             return {"source_id": source["id"], "found": len(articles), "inserted": inserted}
         except Exception as exc:
-            self.db.update_material_source_check(source["id"], error=str(exc))
-            return {"source_id": source["id"], "found": 0, "inserted": 0, "error": str(exc)}
+            error = str(exc)
+            if "AbortError" in error:
+                error = f"BN 页面接口超时 {PAGE_FETCH_TIMEOUT_MS // 1000}s，下一轮重试"
+            self.db.update_material_source_check(source["id"], error=error)
+            return {"source_id": source["id"], "found": 0, "inserted": 0, "error": error}
 
     def check_all(self) -> list[dict[str, Any]]:
         return [self.check_source(source) for source in self.db.list_material_sources()]

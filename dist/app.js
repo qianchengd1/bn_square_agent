@@ -16,6 +16,22 @@ const dashscopeApiKeyHint = document.querySelector("#dashscopeApiKeyHint");
 const autoRunState = document.querySelector("#autoRunState");
 const autoRunInterval = document.querySelector("#autoRunInterval");
 const autoRunConsume = document.querySelector("#autoRunConsume");
+const autoRunStage = document.querySelector("#autoRunStage");
+const autoRunNext = document.querySelector("#autoRunNext");
+const autoRunLast = document.querySelector("#autoRunLast");
+const runMonitorNowButton = document.querySelector("#runMonitorNow");
+const toggleMonitorButton = document.querySelector("#toggleMonitor");
+const navItems = document.querySelectorAll("[data-page-target]");
+const pages = document.querySelectorAll("[data-page]");
+
+function showPage(pageName) {
+  for (const page of pages) {
+    page.classList.toggle("active", page.dataset.page === pageName);
+  }
+  for (const item of navItems) {
+    item.classList.toggle("active", item.dataset.pageTarget === pageName);
+  }
+}
 
 function show(value) {
   output.textContent =
@@ -34,6 +50,33 @@ function escapeHtml(value) {
 function formatTime(value) {
   if (!value) return "-";
   return new Date(value).toLocaleString();
+}
+
+function shortText(value, maxLength = 18) {
+  const text = String(value || "-");
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function nextRunLabel(status) {
+  if (!status.next_run_after_seconds) return status.running ? "本轮运行中" : "-";
+  const reasonMap = {
+    poll: "采集轮询",
+    published: "成功节奏",
+    publish_failed: "失败重试",
+    collect_failed: "采集重试",
+    paused: "已暂停",
+    error: "异常重试",
+  };
+  return `${status.next_run_after_seconds}s ${reasonMap[status.next_run_reason] || ""}`.trim();
+}
+
+function lastConsumeLabel(status) {
+  const latest = (status.last_consume_results || [])[0];
+  if (!latest) return "暂无";
+  const runs = latest.runs || [];
+  if (runs.some((run) => run.publish_success)) return `成功 #${latest.material_item_id}`;
+  if (runs.some((run) => run.error || run.publish_success === false)) return `失败 #${latest.material_item_id}`;
+  return `处理中 #${latest.material_item_id}`;
 }
 
 function setLlmModels(models, selectedModel = "") {
@@ -84,8 +127,23 @@ async function requestJson(url, options = {}) {
 function formatMonitorLogs(status) {
   const lines = [];
   lines.push(`[${new Date().toLocaleString()}] 自动运行状态：${status.running ? "运行中" : "等待下一轮"}`);
-  lines.push(`采集间隔：${status.poll_interval_seconds}s；素材有效期：${status.ttl_seconds}s；每轮消费：${status.consume_batch_size}`);
+  lines.push(`采集间隔：${status.poll_interval_seconds}s；成功间隔：${status.success_interval_seconds}s；失败重试：${status.failure_interval_seconds}s`);
+  lines.push(`素材有效期：${status.ttl_seconds}s；每轮消费：${status.consume_batch_size}`);
   lines.push(`自动消费：${status.auto_consume_materials ? "开启" : "关闭"}`);
+  if (status.current_stage) {
+    lines.push(`当前阶段：${status.current_stage}`);
+  }
+  if (status.next_run_after_seconds) {
+    const reasonMap = {
+      poll: "轮询采集",
+      published: "发布成功节奏",
+      publish_failed: "发布失败重试",
+      collect_failed: "采集失败重试",
+      paused: "自动循环已暂停",
+      error: "运行异常重试",
+    };
+    lines.push(`下一轮：约 ${status.next_run_after_seconds}s 后（${reasonMap[status.next_run_reason] || status.next_run_reason || "等待"}）`);
+  }
   lines.push(`上次开始：${formatTime(status.last_started_at)}`);
   lines.push(`上次结束：${formatTime(status.last_finished_at)}`);
   lines.push(`过期清理：${status.expired_count || 0} 条`);
@@ -97,7 +155,9 @@ function formatMonitorLogs(status) {
   lines.push("采集日志：");
   if ((status.last_results || []).length) {
     for (const item of status.last_results) {
-      lines.push(`- source#${item.source_id}: 找到 ${item.found ?? 0} 条，新增 ${item.inserted ?? 0} 条`);
+      const sourceLabel = item.source_id === "all" ? "全部源" : `source#${item.source_id}`;
+      const errorText = item.error ? `，错误：${item.error}` : "";
+      lines.push(`- ${sourceLabel}: 找到 ${item.found ?? 0} 条，新增 ${item.inserted ?? 0} 条${errorText}`);
     }
   } else {
     lines.push("- 暂无采集记录");
@@ -233,6 +293,7 @@ async function loadMonitorStatus() {
       interval: `${status.poll_interval_seconds}s`,
       ttl: `${status.ttl_seconds}s`,
       auto_consume: status.auto_consume_materials,
+      auto_monitor_enabled: status.auto_monitor_enabled,
       consume_batch_size: status.consume_batch_size,
       last_started_at: status.last_started_at,
       last_finished_at: status.last_finished_at,
@@ -246,8 +307,17 @@ async function loadMonitorStatus() {
     2
   );
   autoRunState.textContent = status.running ? "运行中" : "等待下一轮";
-  autoRunInterval.textContent = `${status.poll_interval_seconds}s`;
+  if (!status.auto_monitor_enabled) {
+    autoRunState.textContent = "已暂停";
+  }
+  autoRunInterval.textContent = `${status.poll_interval_seconds}/${status.success_interval_seconds}/${status.failure_interval_seconds}s`;
   autoRunConsume.textContent = status.auto_consume_materials ? "开启" : "关闭";
+  autoRunStage.textContent = shortText(status.current_stage || "空闲");
+  autoRunStage.title = status.current_stage || "";
+  autoRunNext.textContent = nextRunLabel(status);
+  autoRunLast.textContent = lastConsumeLabel(status);
+  toggleMonitorButton.textContent = status.auto_monitor_enabled ? "暂停自动运行" : "启动自动运行";
+  toggleMonitorButton.dataset.enabled = status.auto_monitor_enabled ? "1" : "0";
   show(formatMonitorLogs(status));
 }
 
@@ -262,9 +332,14 @@ async function loadSettings() {
   settingsForm.elements.dashscope_embedding_model.value =
     settings.dashscope_embedding_model || "";
   settingsForm.elements.auto_publish.checked = Boolean(settings.auto_publish);
+  settingsForm.elements.auto_monitor_enabled.checked = Boolean(settings.auto_monitor_enabled);
   settingsForm.elements.auto_consume_materials.checked = Boolean(settings.auto_consume_materials);
   settingsForm.elements.material_poll_interval_seconds.value =
     settings.material_poll_interval_seconds || 300;
+  settingsForm.elements.material_success_interval_seconds.value =
+    settings.material_success_interval_seconds || 600;
+  settingsForm.elements.material_failure_interval_seconds.value =
+    settings.material_failure_interval_seconds || 120;
   settingsForm.elements.material_ttl_seconds.value = settings.material_ttl_seconds || 7200;
   settingsForm.elements.material_consume_batch_size.value =
     settings.material_consume_batch_size || 1;
@@ -300,9 +375,12 @@ async function saveSettingsForm() {
         ? dashscopeApiKey
         : null,
     dashscope_embedding_model: form.get("dashscope_embedding_model").trim(),
+    auto_monitor_enabled: form.get("auto_monitor_enabled") === "on",
     auto_publish: form.get("auto_publish") === "on",
     auto_consume_materials: form.get("auto_consume_materials") === "on",
     material_poll_interval_seconds: Number(form.get("material_poll_interval_seconds") || 300),
+    material_success_interval_seconds: Number(form.get("material_success_interval_seconds") || 600),
+    material_failure_interval_seconds: Number(form.get("material_failure_interval_seconds") || 120),
     material_ttl_seconds: Number(form.get("material_ttl_seconds") || 7200),
     material_consume_batch_size: Number(form.get("material_consume_batch_size") || 1),
   };
@@ -357,6 +435,12 @@ settingsForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveSettingsForm();
 });
+
+for (const item of navItems) {
+  item.addEventListener("click", () => {
+    showPage(item.dataset.pageTarget);
+  });
+}
 
 document.querySelector("#refreshAccounts").addEventListener("click", loadAccounts);
 document.querySelector("#refreshSettings").addEventListener("click", loadSettings);
@@ -418,6 +502,41 @@ document.querySelector("#checkSources").addEventListener("click", async () => {
 document.querySelector("#checkTools").addEventListener("click", async () => {
   show("检查 MCP 中...");
   show(await requestJson("/api/mcp/tools"));
+});
+
+runMonitorNowButton.addEventListener("click", async () => {
+  try {
+    runMonitorNowButton.disabled = true;
+    show("立即运行一轮：采集 -> 打标 -> 自动消费...");
+    const data = await requestJson("/api/material-sources/check", { method: "POST" });
+    await loadSources();
+    await loadItems();
+    await loadMonitorStatus();
+    show(data);
+  } catch (error) {
+    show(`立即运行失败：${error.message}`);
+  } finally {
+    runMonitorNowButton.disabled = false;
+  }
+});
+
+toggleMonitorButton.addEventListener("click", async () => {
+  try {
+    toggleMonitorButton.disabled = true;
+    const enabled = toggleMonitorButton.dataset.enabled !== "1";
+    show(enabled ? "启动自动循环..." : "暂停自动循环...");
+    const result = await requestJson("/api/material-monitor/enabled", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    await loadSettings();
+    await loadMonitorStatus();
+    show(result);
+  } catch (error) {
+    show(`切换自动循环失败：${error.message}`);
+  } finally {
+    toggleMonitorButton.disabled = false;
+  }
 });
 
 accountsList.addEventListener("click", async (event) => {

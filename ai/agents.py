@@ -91,26 +91,31 @@ class WriterAgent:
     ) -> list[Candidate]:
         result = self.llm.invoke(
             system_prompt=(
-                "你是 BN 广场内容 Writer Agent。把外部素材改写成目标作者风格。"
-                "必须保留素材事实，不得添加素材没有的新事实、数据、消息或来源。"
-                "允许加入预测和观点，但必须用可能、预计、我认为、关注等措辞"
-                "明确表达不确定性，且理由只能来自素材事实和历史中反复出现的"
-                "判断逻辑。不得复制素材或历史文章的原句、句式和段落。"
-                "一次生成三篇候选，三篇的切入角度、开头和结构应明显不同。"
-                "不设置固定字数。"
+                "你是 BN 广场短帖改写 Agent。任务是把外部素材改写成适合自动发布的"
+                "币圈广场短帖，而不是写研报或总结。必须保留素材里的币种、方向、"
+                "核心理由和情绪强度，不得添加素材没有的新事实、数据、消息或来源。"
+                "表达要短句、口语、有交易员语气，可以有态度，但预测必须用可能、"
+                "我看、关注、别追太满、注意风险等方式保留不确定性。不要写成"
+                "触发点/需要留意/总结/首先其次这种报告结构。不得复制素材或历史"
+                "文章的原句、句式和段落。一次只生成一篇候选，candidate_index 固定为 1。"
             ),
             user_prompt=(
                 f"外部素材：\n{material}\n\n"
                 f"写作风格档案：\n{as_json(profile)}\n\n"
                 "相似历史文章的结构化分析（只学习风格和判断逻辑）：\n"
-                f"{as_json(similar_analyses)}"
+                f"{as_json(similar_analyses)}\n\n"
+                "输出要求：\n"
+                "1. 只输出一条可直接发布的短帖正文。\n"
+                "2. 开头尽量直接给币种和方向，例如 $XXX 多/空/继续看。\n"
+                "3. 不要解释自己在改写，不要写标题，不要写项目符号。\n"
+                "4. 文末可以自然提醒风险，但不要变成投资建议声明。"
             ),
             response_model=CandidateSet,
         )
         by_index = {candidate.candidate_index: candidate for candidate in result.candidates}
-        if set(by_index) != {1, 2, 3}:
-            raise ValueError("Writer 必须生成 candidate_index 为 1、2、3 的候选稿")
-        return [by_index[index] for index in (1, 2, 3)]
+        if 1 not in by_index:
+            raise ValueError("Writer 必须生成 candidate_index 为 1 的候选稿")
+        return [by_index[1]]
 
     def rewrite(
         self,
@@ -122,9 +127,9 @@ class WriterAgent:
     ) -> Candidate:
         return self.llm.invoke(
             system_prompt=(
-                "你是 BN 广场内容 Writer Agent。根据审核反馈重写候选稿。"
-                "不得添加素材没有的新事实。允许明确标注为不确定的预测。"
-                "必须解决全部审核问题，并保持目标作者的写作风格。"
+                "你是 BN 广场短帖改写 Agent。根据审核反馈重写候选稿。"
+                "不得添加素材没有的新事实，必须保留币种、方向、核心理由和口语节奏。"
+                "允许明确标注为不确定的预测。必须解决全部审核问题，避免报告腔。"
             ),
             user_prompt=(
                 f"外部素材：\n{material}\n\n"
@@ -132,6 +137,7 @@ class WriterAgent:
                 f"待重写候选：\n{as_json(candidate)}\n\n"
                 f"审核反馈：\n{as_json(review)}\n\n"
                 f"保持 candidate_index={candidate.candidate_index}。"
+                "输出一条可直接发布的短帖，不要写标题、项目符号或解释。"
             ),
             response_model=Candidate,
         )
@@ -154,15 +160,16 @@ class ContentReviewAgent:
                 "你是独立内容审核 Agent，只审核，不修改文章。逐项检查："
                 "1. 是否捏造素材没有的新事实；2. 是否把预测写成事实；"
                 "3. 是否偏离素材；4. 是否复制素材或历史表达；"
-                "5. 是否符合写作风格档案。评分必须严格。事实忠实度只有"
-                "完全没有新增或扭曲事实时才能给 10 分。"
+                "5. 是否符合写作风格档案；6. 是否像 BN 广场短帖而不是分析报告。"
+                "评分必须严格。事实忠实度只有完全没有新增或扭曲事实时才能给 10 分。"
             ),
             user_prompt=(
                 f"外部素材：\n{material}\n\n"
                 f"风格档案：\n{as_json(profile)}\n\n"
                 f"相似历史分析：\n{as_json(similar_analyses)}\n\n"
                 f"候选稿：\n{as_json(candidate)}\n\n"
-                "合格标准：事实忠实度=10；风格匹配度、原创度、表达质量均>=7。"
+                "合格标准：事实忠实度=10；风格匹配度、原创度、表达质量均>=7；"
+                "不能出现明显报告腔标题或项目符号。"
                 "不合格时给出具体 issues 和可执行 rewrite_instructions。"
             ),
             response_model=ContentReview,

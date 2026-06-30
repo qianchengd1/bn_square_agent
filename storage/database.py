@@ -780,6 +780,17 @@ class Database:
                 ),
             )
 
+    def update_generated_content(self, generated_id: int, content: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE generated_posts
+                SET content = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (content, utc_now(), generated_id),
+            )
+
     def approve_generated(self, generated_id: int, final_content: str) -> dict[str, Any]:
         with self.connect() as connection:
             row = connection.execute(
