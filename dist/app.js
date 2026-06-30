@@ -13,6 +13,10 @@ const llmModelSelect = document.querySelector("#llmModelSelect");
 const llmModelsStatus = document.querySelector("#llmModelsStatus");
 const llmApiKeyHint = document.querySelector("#llmApiKeyHint");
 const dashscopeApiKeyHint = document.querySelector("#dashscopeApiKeyHint");
+const sourceNavItems = document.querySelectorAll("[data-source-target]");
+const sourceTypeNavItems = document.querySelectorAll("[data-source-type]");
+const settingsNavItems = document.querySelectorAll("[data-settings-target]");
+const settingsGroups = document.querySelectorAll("[data-settings-group]");
 const autoRunState = document.querySelector("#autoRunState");
 const autoRunInterval = document.querySelector("#autoRunInterval");
 const autoRunConsume = document.querySelector("#autoRunConsume");
@@ -23,6 +27,7 @@ const runMonitorNowButton = document.querySelector("#runMonitorNow");
 const toggleMonitorButton = document.querySelector("#toggleMonitor");
 const navItems = document.querySelectorAll("[data-page-target]");
 const pages = document.querySelectorAll("[data-page]");
+let currentSourceType = "binance_square";
 
 function showPage(pageName) {
   for (const page of pages) {
@@ -31,6 +36,48 @@ function showPage(pageName) {
   for (const item of navItems) {
     item.classList.toggle("active", item.dataset.pageTarget === pageName);
   }
+}
+
+function showSettingsGroup(groupName) {
+  for (const group of settingsGroups) {
+    group.classList.toggle("active", group.dataset.settingsGroup === groupName);
+  }
+  for (const item of settingsNavItems) {
+    item.classList.toggle("active", item.dataset.settingsTarget === groupName);
+  }
+}
+
+function showSourceSection(sectionName) {
+  for (const item of sourceNavItems) {
+    item.classList.toggle(
+      "active",
+      item.dataset.sourceTarget === sectionName
+        && item.dataset.sourceType === currentSourceType
+    );
+  }
+  const target = document.querySelector(`[data-source-section="${sectionName}"]`);
+  if (target) {
+    target.scrollIntoView({ block: "start" });
+  }
+}
+
+function selectSourceType(sourceType) {
+  currentSourceType = sourceType || "binance_square";
+  if (sourceType && sourceForm.elements.source_type) {
+    sourceForm.elements.source_type.value = sourceType;
+  }
+  for (const item of sourceTypeNavItems) {
+    item.classList.toggle("active", item.dataset.sourceType === sourceType);
+  }
+  const isTechFlow = currentSourceType === "techflow_newsletter";
+  for (const field of document.querySelectorAll(".bn-source-field")) {
+    field.classList.toggle("hidden", isTechFlow);
+  }
+  document
+    .querySelector(".techflow-source-note")
+    ?.classList.toggle("active", isTechFlow);
+  sourceForm.elements.name.required = !isTechFlow;
+  sourceForm.elements.url.required = !isTechFlow;
 }
 
 function show(value) {
@@ -65,6 +112,7 @@ function nextRunLabel(status) {
     publish_failed: "失败重试",
     collect_failed: "采集重试",
     paused: "已暂停",
+    paused_after_failures: "连续失败暂停",
     error: "异常重试",
   };
   return `${status.next_run_after_seconds}s ${reasonMap[status.next_run_reason] || ""}`.trim();
@@ -112,6 +160,13 @@ function setFieldHint(element, configured, maskedValue) {
     : "当前未保存";
 }
 
+function sourceTypeLabel(sourceType) {
+  return {
+    binance_square: "BN 广场作者",
+    techflow_newsletter: "TechFlow 深潮快讯",
+  }[sourceType] || sourceType || "-";
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -140,9 +195,18 @@ function formatMonitorLogs(status) {
       publish_failed: "发布失败重试",
       collect_failed: "采集失败重试",
       paused: "自动循环已暂停",
+      paused_after_failures: "连续发文失效，已暂停",
       error: "运行异常重试",
     };
     lines.push(`下一轮：约 ${status.next_run_after_seconds}s 后（${reasonMap[status.next_run_reason] || status.next_run_reason || "等待"}）`);
+  }
+  lines.push(`连续发文失效：${status.consecutive_publish_failures || 0}/${status.publish_failure_alert_threshold || 5}`);
+  if (status.last_alert_at) {
+    lines.push(
+      `邮件提醒：${status.last_alert_sent ? "已发送" : "未发送"} ${formatTime(status.last_alert_at)}${
+        status.last_alert_error ? `，原因：${status.last_alert_error}` : ""
+      }`
+    );
   }
   lines.push(`上次开始：${formatTime(status.last_started_at)}`);
   lines.push(`上次结束：${formatTime(status.last_finished_at)}`);
@@ -237,10 +301,11 @@ async function loadAccounts() {
 }
 
 async function loadSources() {
-  const sources = await requestJson("/api/material-sources");
+  const allSources = await requestJson("/api/material-sources");
+  const sources = allSources.filter((source) => source.source_type === currentSourceType);
   sourcesList.innerHTML = "";
   if (!sources.length) {
-    sourcesList.innerHTML = '<div class="muted">还没有素材源。</div>';
+    sourcesList.innerHTML = `<div class="muted">还没有${escapeHtml(sourceTypeLabel(currentSourceType))}素材源。</div>`;
     return;
   }
   for (const source of sources) {
@@ -248,6 +313,7 @@ async function loadSources() {
     item.className = "account-item";
     item.innerHTML = `
       <strong>${escapeHtml(source.name)}</strong>
+      <div class="muted">type: ${escapeHtml(sourceTypeLabel(source.source_type))}</div>
       <div class="muted">${escapeHtml(source.url)}</div>
       <div class="muted">last: ${escapeHtml(source.last_checked_at || "未采集")}</div>
       ${source.last_error ? `<div class="muted">error: ${escapeHtml(source.last_error)}</div>` : ""}
@@ -261,10 +327,13 @@ async function loadSources() {
 }
 
 async function loadItems() {
-  const items = await requestJson("/api/material-items?status=new&limit=30");
+  const allItems = await requestJson("/api/material-items?status=new&limit=80");
+  const items = allItems
+    .filter((material) => material.source_type === currentSourceType)
+    .slice(0, 30);
   itemsList.innerHTML = "";
   if (!items.length) {
-    itemsList.innerHTML = '<div class="muted">暂无待使用素材。</div>';
+    itemsList.innerHTML = `<div class="muted">暂无${escapeHtml(sourceTypeLabel(currentSourceType))}待使用素材。</div>`;
     return;
   }
   for (const material of items) {
@@ -299,6 +368,10 @@ async function loadMonitorStatus() {
       last_finished_at: status.last_finished_at,
       expired_count: status.expired_count,
       last_error: status.last_error,
+      consecutive_publish_failures: status.consecutive_publish_failures,
+      publish_failure_alert_threshold: status.publish_failure_alert_threshold,
+      last_alert_sent: status.last_alert_sent,
+      last_alert_error: status.last_alert_error,
       last_results: status.last_results,
       last_tag_results: status.last_tag_results,
       last_consume_results: status.last_consume_results,
@@ -343,6 +416,16 @@ async function loadSettings() {
   settingsForm.elements.material_ttl_seconds.value = settings.material_ttl_seconds || 7200;
   settingsForm.elements.material_consume_batch_size.value =
     settings.material_consume_batch_size || 1;
+  settingsForm.elements.publish_failure_alert_threshold.value =
+    settings.publish_failure_alert_threshold || 5;
+  settingsForm.elements.alert_email_enabled.checked = Boolean(settings.alert_email_enabled);
+  settingsForm.elements.alert_email_to.value = settings.alert_email_to || "";
+  settingsForm.elements.smtp_host.value = settings.smtp_host || "";
+  settingsForm.elements.smtp_port.value = settings.smtp_port || 587;
+  settingsForm.elements.smtp_username.value = settings.smtp_username || "";
+  settingsForm.elements.smtp_password.value = settings.smtp_password_masked || "";
+  settingsForm.elements.smtp_from.value = settings.smtp_from || "";
+  settingsForm.elements.smtp_use_tls.checked = settings.smtp_use_tls !== false;
 
   setLlmModels(settings.llm_model_options || [], settings.llm_model || "");
   llmModelsStatus.textContent = settings.llm_model
@@ -355,6 +438,9 @@ async function loadSettings() {
       dashscope_api_key: settings.dashscope_api_key_masked || "缺失",
       llm_base_url: settings.llm_base_url || "缺失",
       llm_model: settings.llm_model || "缺失",
+      email_alert: settings.alert_email_enabled ? "开启" : "关闭",
+      alert_email_to: settings.alert_email_to || "缺失",
+      smtp_host: settings.smtp_host || "缺失",
     },
     null,
     2
@@ -365,6 +451,7 @@ async function saveSettingsForm() {
   const form = new FormData(settingsForm);
   const llmApiKey = form.get("llm_api_key").trim();
   const dashscopeApiKey = form.get("dashscope_api_key").trim();
+  const smtpPassword = form.get("smtp_password").trim();
   const unchangedSecret = (value) => value.includes("*") || value.includes("•");
   const payload = {
     llm_api_key: llmApiKey && !unchangedSecret(llmApiKey) ? llmApiKey : null,
@@ -383,6 +470,18 @@ async function saveSettingsForm() {
     material_failure_interval_seconds: Number(form.get("material_failure_interval_seconds") || 120),
     material_ttl_seconds: Number(form.get("material_ttl_seconds") || 7200),
     material_consume_batch_size: Number(form.get("material_consume_batch_size") || 1),
+    publish_failure_alert_threshold: Number(form.get("publish_failure_alert_threshold") || 5),
+    alert_email_enabled: form.get("alert_email_enabled") === "on",
+    alert_email_to: form.get("alert_email_to").trim(),
+    smtp_host: form.get("smtp_host").trim(),
+    smtp_port: Number(form.get("smtp_port") || 587),
+    smtp_username: form.get("smtp_username").trim(),
+    smtp_password:
+      smtpPassword && !unchangedSecret(smtpPassword)
+        ? smtpPassword
+        : null,
+    smtp_from: form.get("smtp_from").trim(),
+    smtp_use_tls: form.get("smtp_use_tls") === "on",
   };
   show("保存配置...");
   const result = await requestJson("/api/settings", {
@@ -415,10 +514,14 @@ accountForm.addEventListener("submit", async (event) => {
 sourceForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(sourceForm);
+  const sourceType = form.get("source_type") || currentSourceType;
+  const isTechFlow = sourceType === "techflow_newsletter";
   const payload = {
-    name: form.get("name").trim(),
-    url: form.get("url").trim(),
-    source_type: "binance_square",
+    name: isTechFlow ? "TechFlow 深潮快讯" : form.get("name").trim(),
+    url: isTechFlow
+      ? "https://www.techflowpost.com/newsletter?is_hot=1&articleType=1006"
+      : form.get("url").trim(),
+    source_type: sourceType,
     enabled: true,
   };
   show("保存素材源...");
@@ -427,6 +530,7 @@ sourceForm.addEventListener("submit", async (event) => {
     body: JSON.stringify(payload),
   });
   sourceForm.reset();
+  selectSourceType(sourceType);
   await loadSources();
   show("素材源已保存。");
 });
@@ -439,11 +543,31 @@ settingsForm.addEventListener("submit", async (event) => {
 for (const item of navItems) {
   item.addEventListener("click", () => {
     showPage(item.dataset.pageTarget);
+    if (item.dataset.pageTarget === "sources") {
+      showSourceSection("sources");
+    }
   });
 }
 
 document.querySelector("#refreshAccounts").addEventListener("click", loadAccounts);
 document.querySelector("#refreshSettings").addEventListener("click", loadSettings);
+for (const item of sourceNavItems) {
+  item.addEventListener("click", async () => {
+    showPage("sources");
+    if (item.dataset.sourceType) {
+      selectSourceType(item.dataset.sourceType);
+    }
+    showSourceSection(item.dataset.sourceTarget);
+    await loadSources();
+    await loadItems();
+  });
+}
+for (const item of settingsNavItems) {
+  item.addEventListener("click", () => {
+    showPage("settings");
+    showSettingsGroup(item.dataset.settingsTarget);
+  });
+}
 document.querySelector("#testLlm").addEventListener("click", async () => {
   await saveSettingsForm();
   show("测试 LLM 连接...");
@@ -579,6 +703,9 @@ setInterval(() => {
   loadMonitorStatus().catch(() => {});
   loadItems().catch(() => {});
 }, 30000);
+
+selectSourceType("binance_square");
+showSettingsGroup("llm");
 
 Promise.all([
   loadAccounts(),

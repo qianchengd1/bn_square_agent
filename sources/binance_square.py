@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import re
 from typing import Any
 from urllib.parse import urlparse
 
 from ..storage.database import Database
+from .models import MaterialArticle
+from .techflow import TechFlowNewsletterMonitor
 
 
 BINANCE_BASE_URL = "https://www.binance.com"
@@ -15,16 +16,6 @@ USER_CLIENT_API = "/bapi/composite/v3/friendly/pgc/user/client"
 PROFILE_CONTENTS_API = (
     "/bapi/composite/v2/friendly/pgc/content/queryUserProfilePageContentsWithFilter"
 )
-
-
-@dataclass(frozen=True)
-class MaterialArticle:
-    title: str | None
-    content: str
-    author: str | None = None
-    url: str | None = None
-    external_id: str | None = None
-    source_created_at: str | None = None
 
 
 class BinanceSquareMonitor:
@@ -181,12 +172,17 @@ class MaterialSourceService:
     def __init__(self, db: Database):
         self.db = db
         self.binance_square = BinanceSquareMonitor()
+        self.techflow_newsletter = TechFlowNewsletterMonitor()
 
     def check_source(self, source: dict[str, Any]) -> dict[str, Any]:
-        if source["source_type"] != "binance_square":
-            raise ValueError(f"不支持的素材源类型: {source['source_type']}")
+        source_type = source["source_type"]
         try:
-            articles = self.binance_square.fetch(source["url"])
+            if source_type == "binance_square":
+                articles = self.binance_square.fetch(source["url"])
+            elif source_type == "techflow_newsletter":
+                articles = self.techflow_newsletter.fetch(source["url"])
+            else:
+                raise ValueError(f"不支持的素材源类型: {source_type}")
             inserted = 0
             for article in articles:
                 _, fresh = self.db.add_material_item(
@@ -200,13 +196,24 @@ class MaterialSourceService:
                 )
                 inserted += 1 if fresh else 0
             self.db.update_material_source_check(source["id"])
-            return {"source_id": source["id"], "found": len(articles), "inserted": inserted}
+            return {
+                "source_id": source["id"],
+                "source_type": source_type,
+                "found": len(articles),
+                "inserted": inserted,
+            }
         except Exception as exc:
             error = str(exc)
             if "AbortError" in error:
                 error = f"BN 页面接口超时 {PAGE_FETCH_TIMEOUT_MS // 1000}s，下一轮重试"
             self.db.update_material_source_check(source["id"], error=error)
-            return {"source_id": source["id"], "found": 0, "inserted": 0, "error": error}
+            return {
+                "source_id": source["id"],
+                "source_type": source_type,
+                "found": 0,
+                "inserted": 0,
+                "error": error,
+            }
 
     def check_all(self) -> list[dict[str, Any]]:
         return [self.check_source(source) for source in self.db.list_material_sources()]

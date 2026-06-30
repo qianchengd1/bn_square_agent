@@ -107,6 +107,15 @@ class Settings:
     material_ttl_seconds: int
     auto_consume_materials: bool
     material_consume_batch_size: int
+    publish_failure_alert_threshold: int
+    alert_email_enabled: bool
+    alert_email_to: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_from: str
+    smtp_use_tls: bool
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -153,6 +162,21 @@ class Settings:
             material_consume_batch_size=max(
                 1, int(os.getenv("MATERIAL_CONSUME_BATCH_SIZE", "1"))
             ),
+            publish_failure_alert_threshold=max(
+                1, int(os.getenv("PUBLISH_FAILURE_ALERT_THRESHOLD", "5"))
+            ),
+            alert_email_enabled=os.getenv("ALERT_EMAIL_ENABLED", "0")
+            .strip()
+            .lower()
+            not in {"0", "false", "no", "off"},
+            alert_email_to=os.getenv("ALERT_EMAIL_TO", "").strip(),
+            smtp_host=os.getenv("SMTP_HOST", "").strip(),
+            smtp_port=int(os.getenv("SMTP_PORT", "587")),
+            smtp_username=os.getenv("SMTP_USERNAME", "").strip(),
+            smtp_password=os.getenv("SMTP_PASSWORD", "").strip(),
+            smtp_from=os.getenv("SMTP_FROM", "").strip(),
+            smtp_use_tls=os.getenv("SMTP_USE_TLS", "1").strip().lower()
+            not in {"0", "false", "no", "off"},
         )
 
     def validate_for_llm(self) -> None:
@@ -240,6 +264,21 @@ class Settings:
                 "MATERIAL_CONSUME_BATCH_SIZE",
                 self.material_consume_batch_size,
             ),
+            publish_failure_alert_threshold=integer(
+                "PUBLISH_FAILURE_ALERT_THRESHOLD",
+                self.publish_failure_alert_threshold,
+            ),
+            alert_email_enabled=boolean(
+                "ALERT_EMAIL_ENABLED",
+                self.alert_email_enabled,
+            ),
+            alert_email_to=text("ALERT_EMAIL_TO", self.alert_email_to),
+            smtp_host=text("SMTP_HOST", self.smtp_host),
+            smtp_port=integer("SMTP_PORT", self.smtp_port),
+            smtp_username=text("SMTP_USERNAME", self.smtp_username),
+            smtp_password=text("SMTP_PASSWORD", self.smtp_password),
+            smtp_from=text("SMTP_FROM", self.smtp_from),
+            smtp_use_tls=boolean("SMTP_USE_TLS", self.smtp_use_tls),
         )
 
 

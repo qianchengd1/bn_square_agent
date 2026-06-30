@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from email.message import EmailMessage
 from pathlib import Path
+import smtplib
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -39,6 +41,10 @@ monitor_state: dict[str, Any] = {
     "next_run_after_seconds": None,
     "next_run_reason": "poll",
     "current_stage": None,
+    "consecutive_publish_failures": 0,
+    "last_alert_at": None,
+    "last_alert_error": None,
+    "last_alert_sent": False,
 }
 
 
@@ -48,6 +54,114 @@ def _consume_results_have_failure(consume_results: list[dict[str, Any]]) -> bool
             if run.get("error") or run.get("publish_success") is False:
                 return True
     return False
+
+
+def _consume_results_have_success(consume_results: list[dict[str, Any]]) -> bool:
+    for item in consume_results:
+        for run in item.get("runs") or []:
+            if run.get("publish_success") is True:
+                return True
+    return False
+
+
+def _consume_results_failure_count(consume_results: list[dict[str, Any]]) -> int:
+    count = 0
+    for item in consume_results:
+        runs = item.get("runs") or []
+        if not runs and item.get("error"):
+            count += 1
+        for run in runs:
+            if run.get("error") or run.get("publish_success") is False:
+                count += 1
+    return count
+
+
+def _send_publish_failure_alert_email(
+    settings: Settings,
+    failure_count: int,
+    consume_results: list[dict[str, Any]],
+) -> tuple[bool, str | None]:
+    if not settings.alert_email_enabled:
+        return False, "邮件提醒未开启"
+    missing = [
+        name
+        for name, value in (
+            ("ALERT_EMAIL_TO", settings.alert_email_to),
+            ("SMTP_HOST", settings.smtp_host),
+            ("SMTP_FROM", settings.smtp_from or settings.smtp_username),
+        )
+        if not value
+    ]
+    if missing:
+        return False, f"邮件提醒缺少配置: {', '.join(missing)}"
+
+    lines = [
+        f"BN Square Agent 已连续 {failure_count} 次发文失效，自动循环已暂停。",
+        "",
+        "最近失败记录：",
+    ]
+    for item in consume_results[:5]:
+        title = item.get("title") or f"material#{item.get('material_item_id')}"
+        lines.append(f"- {title}")
+        for run in item.get("runs") or []:
+            error = run.get("error") or run.get("publish_result") or "未知错误"
+            lines.append(f"  账号 {run.get('account_key')}: {error}")
+
+    message = EmailMessage()
+    message["Subject"] = f"BN Square Agent 连续 {failure_count} 次发文失效"
+    message["From"] = settings.smtp_from or settings.smtp_username
+    message["To"] = settings.alert_email_to
+    message.set_content("\n".join(lines))
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+            if settings.smtp_use_tls:
+                smtp.starttls()
+            if settings.smtp_username:
+                smtp.login(settings.smtp_username, settings.smtp_password)
+            smtp.send_message(message)
+        return True, None
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _update_publish_failure_guard(
+    settings: Settings,
+    db: Database,
+    consume_results: list[dict[str, Any]],
+) -> None:
+    if not consume_results:
+        return
+    if _consume_results_have_success(consume_results):
+        monitor_state["consecutive_publish_failures"] = 0
+        monitor_state["last_alert_error"] = None
+        monitor_state["last_alert_sent"] = False
+        return
+
+    failed_count = _consume_results_failure_count(consume_results)
+    if not failed_count:
+        return
+
+    current_count = int(monitor_state.get("consecutive_publish_failures") or 0)
+    current_count += failed_count
+    monitor_state["consecutive_publish_failures"] = current_count
+
+    threshold = max(1, settings.publish_failure_alert_threshold)
+    if current_count < threshold:
+        return
+
+    sent, error = _send_publish_failure_alert_email(
+        settings,
+        current_count,
+        consume_results,
+    )
+    db.set_app_settings({"AUTO_MONITOR_ENABLED": "0"})
+    monitor_state["last_alert_at"] = datetime.now(timezone.utc).isoformat()
+    monitor_state["last_alert_sent"] = sent
+    monitor_state["last_alert_error"] = error
+    monitor_state["next_run_after_seconds"] = _paused_monitor_delay(settings)
+    monitor_state["next_run_reason"] = "paused_after_failures"
+    monitor_state["current_stage"] = "连续发文失效，自动循环已暂停"
 
 
 def _next_monitor_delay(settings: Settings, result: dict[str, Any]) -> tuple[int, str]:
@@ -178,6 +292,7 @@ async def run_material_monitor_once() -> dict[str, Any]:
                 "expired_count": expired_count,
             }
         )
+        _update_publish_failure_guard(settings, db, consume_results)
         return {
             "expired_count": expired_count,
             "results": results,
@@ -188,7 +303,8 @@ async def run_material_monitor_once() -> dict[str, Any]:
         raise
     finally:
         monitor_state["running"] = False
-        monitor_state["current_stage"] = None
+        if monitor_state.get("next_run_reason") != "paused_after_failures":
+            monitor_state["current_stage"] = None
         monitor_state["last_finished_at"] = datetime.now(timezone.utc).isoformat()
 
 
@@ -206,7 +322,12 @@ async def material_monitor_loop() -> None:
         reason = "poll"
         try:
             result = await run_material_monitor_once()
-            delay_seconds, reason = _next_monitor_delay(settings, result)
+            latest_settings = get_settings()
+            if not latest_settings.auto_monitor_enabled:
+                delay_seconds = _paused_monitor_delay(latest_settings)
+                reason = monitor_state.get("next_run_reason") or "paused"
+            else:
+                delay_seconds, reason = _next_monitor_delay(settings, result)
         except Exception:
             delay_seconds = max(30, settings.material_failure_interval_seconds)
             reason = "error"
@@ -261,6 +382,15 @@ class SettingsPayload(BaseModel):
     material_failure_interval_seconds: int | None = None
     material_ttl_seconds: int | None = None
     material_consume_batch_size: int | None = None
+    publish_failure_alert_threshold: int | None = None
+    alert_email_enabled: bool | None = None
+    alert_email_to: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    smtp_use_tls: bool | None = None
 
 
 class MaterialSourcePayload(BaseModel):
@@ -388,6 +518,16 @@ def read_settings() -> dict:
         "material_failure_interval_seconds": settings.material_failure_interval_seconds,
         "material_ttl_seconds": settings.material_ttl_seconds,
         "material_consume_batch_size": settings.material_consume_batch_size,
+        "publish_failure_alert_threshold": settings.publish_failure_alert_threshold,
+        "alert_email_enabled": settings.alert_email_enabled,
+        "alert_email_to": settings.alert_email_to,
+        "smtp_host": settings.smtp_host,
+        "smtp_port": settings.smtp_port,
+        "smtp_username": settings.smtp_username,
+        "smtp_password_configured": bool(settings.smtp_password),
+        "smtp_password_masked": mask_secret(settings.smtp_password),
+        "smtp_from": settings.smtp_from,
+        "smtp_use_tls": settings.smtp_use_tls,
     }
 
 
@@ -400,15 +540,22 @@ def save_settings(payload: SettingsPayload) -> dict:
         "dashscope_embedding_model": "DASHSCOPE_EMBEDDING_MODEL",
         "mcp_url": "MCP_URL",
         "mcp_publish_tool": "MCP_PUBLISH_TOOL",
+        "alert_email_to": "ALERT_EMAIL_TO",
+        "smtp_host": "SMTP_HOST",
+        "smtp_username": "SMTP_USERNAME",
+        "smtp_from": "SMTP_FROM",
     }
     secret_fields = {
         "llm_api_key": "LLM_API_KEY",
         "dashscope_api_key": "DASHSCOPE_API_KEY",
+        "smtp_password": "SMTP_PASSWORD",
     }
     bool_fields = {
         "auto_monitor_enabled": "AUTO_MONITOR_ENABLED",
         "auto_publish": "AUTO_PUBLISH",
         "auto_consume_materials": "AUTO_CONSUME_MATERIALS",
+        "alert_email_enabled": "ALERT_EMAIL_ENABLED",
+        "smtp_use_tls": "SMTP_USE_TLS",
     }
     int_fields = {
         "material_poll_interval_seconds": "MATERIAL_POLL_INTERVAL_SECONDS",
@@ -416,6 +563,8 @@ def save_settings(payload: SettingsPayload) -> dict:
         "material_failure_interval_seconds": "MATERIAL_FAILURE_INTERVAL_SECONDS",
         "material_ttl_seconds": "MATERIAL_TTL_SECONDS",
         "material_consume_batch_size": "MATERIAL_CONSUME_BATCH_SIZE",
+        "publish_failure_alert_threshold": "PUBLISH_FAILURE_ALERT_THRESHOLD",
+        "smtp_port": "SMTP_PORT",
     }
     data = payload.model_dump()
     for field, key in normal_fields.items():
@@ -603,8 +752,8 @@ def list_material_sources() -> list[dict]:
 
 @app.post("/api/material-sources")
 def save_material_source(payload: MaterialSourcePayload) -> dict:
-    if payload.source_type != "binance_square":
-        raise HTTPException(status_code=400, detail="当前只支持 binance_square 素材源")
+    if payload.source_type not in {"binance_square", "techflow_newsletter"}:
+        raise HTTPException(status_code=400, detail="当前只支持 BN 广场和 TechFlow 快讯素材源")
     source_id = get_db().upsert_material_source(
         name=payload.name.strip(),
         source_type=payload.source_type,
@@ -654,6 +803,13 @@ def material_monitor_status() -> dict:
         "auto_consume_materials": settings.auto_consume_materials,
         "auto_monitor_enabled": settings.auto_monitor_enabled,
         "consume_batch_size": settings.material_consume_batch_size,
+        "publish_failure_alert_threshold": settings.publish_failure_alert_threshold,
+        "alert_email_enabled": settings.alert_email_enabled,
+        "alert_email_configured": bool(
+            settings.alert_email_to
+            and settings.smtp_host
+            and (settings.smtp_from or settings.smtp_username)
+        ),
     }
 
 

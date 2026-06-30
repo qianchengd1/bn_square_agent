@@ -144,7 +144,9 @@ class Database:
             CREATE TABLE IF NOT EXISTS material_sources (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                source_type TEXT NOT NULL CHECK(source_type IN ('binance_square')),
+                source_type TEXT NOT NULL CHECK(
+                    source_type IN ('binance_square', 'techflow_newsletter')
+                ),
                 url TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 last_checked_at TEXT,
@@ -194,6 +196,8 @@ class Database:
         if "check_error" not in account_columns:
             connection.execute("ALTER TABLE accounts ADD COLUMN check_error TEXT")
         material_columns = self._columns(connection, "material_items")
+        self._ensure_material_source_types(connection)
+        self._ensure_material_items_source_fk(connection)
         if "tag_status" not in material_columns:
             connection.execute(
                 "ALTER TABLE material_items ADD COLUMN tag_status TEXT NOT NULL DEFAULT 'pending'"
@@ -204,6 +208,91 @@ class Database:
             connection.execute("ALTER TABLE material_items ADD COLUMN tag_error TEXT")
         if "tagged_at" not in material_columns:
             connection.execute("ALTER TABLE material_items ADD COLUMN tagged_at TEXT")
+
+    def _ensure_material_items_source_fk(self, connection: sqlite3.Connection) -> None:
+        foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(material_items)"
+        ).fetchall()
+        if not any(str(row["table"]) == "material_sources_old" for row in foreign_keys):
+            return
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript(
+            """
+            ALTER TABLE material_items RENAME TO material_items_old;
+            CREATE TABLE material_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER,
+                external_id TEXT,
+                author TEXT,
+                title TEXT,
+                content TEXT NOT NULL,
+                url TEXT,
+                source_created_at TEXT,
+                hash TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'new' CHECK(
+                    status IN ('new', 'used', 'ignored', 'failed')
+                ),
+                tag_status TEXT NOT NULL DEFAULT 'pending',
+                tag_json TEXT,
+                tag_error TEXT,
+                tagged_at TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(source_id) REFERENCES material_sources(id)
+            );
+            INSERT INTO material_items (
+                id, source_id, external_id, author, title, content, url,
+                source_created_at, hash, status, tag_status, tag_json,
+                tag_error, tagged_at, error, created_at, updated_at
+            )
+            SELECT
+                id, source_id, external_id, author, title, content, url,
+                source_created_at, hash, status, tag_status, tag_json,
+                tag_error, tagged_at, error, created_at, updated_at
+            FROM material_items_old;
+            DROP TABLE material_items_old;
+            PRAGMA foreign_keys = ON;
+            """
+        )
+
+    def _ensure_material_source_types(self, connection: sqlite3.Connection) -> None:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'material_sources'"
+        ).fetchone()
+        table_sql = str(row["sql"] if row else "")
+        if "techflow_newsletter" in table_sql:
+            return
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript(
+            """
+            ALTER TABLE material_sources RENAME TO material_sources_old;
+            CREATE TABLE material_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                source_type TEXT NOT NULL CHECK(
+                    source_type IN ('binance_square', 'techflow_newsletter')
+                ),
+                url TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_checked_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(source_type, url)
+            );
+            INSERT INTO material_sources (
+                id, name, source_type, url, enabled, last_checked_at,
+                last_error, created_at, updated_at
+            )
+            SELECT
+                id, name, source_type, url, enabled, last_checked_at,
+                last_error, created_at, updated_at
+            FROM material_sources_old;
+            DROP TABLE material_sources_old;
+            PRAGMA foreign_keys = ON;
+            """
+        )
 
     def upsert_material_source(
         self,
