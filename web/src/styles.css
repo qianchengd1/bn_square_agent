@@ -1,0 +1,195 @@
+:root {
+  font-family:
+    Inter, "Segoe UI", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont,
+    sans-serif;
+  color: #1f2937;
+  background: #f5f7fb;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+.app-shell {
+  min-height: 100vh;
+  background: #f5f7fb;
+}
+
+.app-sidebar {
+  min-height: 100vh;
+  background: #101827;
+  box-shadow: 2px 0 8px rgba(15, 23, 42, 0.18);
+}
+
+.brand {
+  display: grid;
+  gap: 4px;
+  height: 64px;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+  color: #ffffff;
+}
+
+.brand strong {
+  font-size: 17px;
+  line-height: 1.1;
+}
+
+.brand span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.side-menu {
+  border-right: 0 !important;
+}
+
+.side-menu .el-menu-item.is-active {
+  background: #2563eb !important;
+}
+
+.side-menu .el-sub-menu .el-menu-item {
+  min-width: 0;
+  padding-left: 52px !important;
+  background: #0b1220 !important;
+}
+
+.side-menu .el-sub-menu .el-menu-item.is-active {
+  background: rgba(37, 99, 235, 0.88) !important;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 64px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #ffffff;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+}
+
+.app-header p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.app-main {
+  padding: 16px;
+}
+
+.page-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.toolbar-title {
+  display: grid;
+  gap: 3px;
+}
+
+.toolbar-title strong {
+  color: #111827;
+  font-size: 16px;
+}
+
+.toolbar-title span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metric-card {
+  padding: 14px;
+  border: 1px solid #edf2f7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.metric-card strong,
+.metric-card span {
+  display: block;
+}
+
+.metric-card strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-card span {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.log-box {
+  min-height: 260px;
+  max-height: 560px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #d9f99d;
+  padding: 14px;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.muted {
+  color: #64748b;
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    display: block;
+  }
+
+  .app-sidebar {
+    width: 100% !important;
+    min-height: auto;
+  }
+
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

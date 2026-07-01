@@ -1,0 +1,17 @@
+import { createRouter, createWebHashHistory } from "vue-router";
+
+import Accounts from "@/views/Accounts.vue";
+import Dashboard from "@/views/Dashboard.vue";
+import Settings from "@/views/Settings.vue";
+import Sources from "@/views/Sources.vue";
+
+export const router = createRouter({
+  history: createWebHashHistory(),
+  routes: [
+    { path: "/", redirect: "/dashboard" },
+    { path: "/dashboard", name: "dashboard", component: Dashboard },
+    { path: "/accounts", name: "accounts", component: Accounts },
+    { path: "/sources", name: "sources", component: Sources },
+    { path: "/settings", name: "settings", component: Settings },
+  ],
+});

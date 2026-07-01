@@ -1,0 +1,29 @@
+# BN Square Agent Web
+
+这是 BN Square Agent 的 Vue3/Vite 管理后台前端工程，按 Vben 风格的左侧菜单、顶栏、内容页结构组织。
+
+## 技术栈
+
+- Vue 3
+- Vite
+- TypeScript
+- Vue Router
+- Pinia
+- Element Plus
+
+## 命令
+
+```bash
+pnpm install
+pnpm dev
+pnpm build
+```
+
+`pnpm build` 会把构建产物输出到项目根目录的 `dist/`，由 FastAPI 继续托管。
+
+## 页面
+
+- 自动运行：自动循环状态、运行日志、MCP 检查
+- 账号管理：Cookie 账号保存、检测、删除
+- 素材中心：深潮源配置、深潮素材库、BN 广场源配置、BN 广场素材库
+- 系统设置：大模型设置、邮箱预警设置、自动运行设置

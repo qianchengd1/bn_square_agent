@@ -15,6 +15,11 @@ __pycache__/
 venv/
 env/
 
+# Node frontend dependencies and local build caches
+node_modules/
+web/node_modules/
+web/.vite/
+
 # Tooling / local agent state
 .agents/
 .codex/
